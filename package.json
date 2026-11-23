@@ -1,0 +1,18 @@
+{
+  "name": "webapp-az-401-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "generate:api": "openapi-typescript api/openapi.yaml --output src/api/schema.gen.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run generate:api && npm run typecheck"
+  },
+  "dependencies": {
+    "openapi-fetch": "0.17.0"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

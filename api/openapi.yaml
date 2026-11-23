@@ -1,0 +1,805 @@
+openapi: 3.0.3
+info:
+  title: AZ-401 study tracker API
+  version: 1.0.0
+  description: |
+    API for the AZ-401 study tracker. Users tick off checklist items for the 17 AZ-401
+    objectives, take quizzes per objective and follow their progress.
+
+    ## Authentication
+    Every endpoint except `/healthz` and `/readyz` needs a Microsoft Entra ID access token
+    in the `Authorization: Bearer <token>` header. The API creates a user the first time
+    a user calls it. All data is per user: a user never sees another user's progress or quizzes.
+
+    ## Errors
+    Errors use the problem details format from RFC 9457 (`application/problem+json`).
+    `type` is a stable identifier the client can branch on. `detail` is for people and can change.
+
+    | Status | When |
+    | --- | --- |
+    | 400 | The request is malformed: invalid JSON, a missing field or a wrong type. |
+    | 401 | The access token is missing, expired or invalid. |
+    | 404 | The objective, checklist item or quiz doesn't exist, or belongs to another user. |
+    | 409 | The request conflicts with the current state, for example submitting a quiz twice. |
+    | 422 | The request is well formed but can't be processed, for example an answer to a question that isn't in the quiz. |
+    | 500 | Unexpected server error. |
+  contact:
+    name: Backend team
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: Health
+    description: Liveness and readiness checks for App Service and monitoring.
+  - name: Objectives
+    description: The 17 AZ-401 objectives and their checklists.
+  - name: Quizzes
+    description: Multiple-choice quizzes per objective.
+  - name: Progress
+    description: Statistics for the signed-in user.
+security:
+  - entraId: []
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Liveness check
+      description: Returns 200 while the process is running. Doesn't check the database.
+      security: []
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /readyz:
+    get:
+      tags: [Health]
+      operationId: getReadiness
+      summary: Readiness check
+      description: Returns 200 only when the database is reachable. Returns 503 otherwise.
+      security: []
+      responses:
+        "200":
+          description: The service can handle requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: The database isn't reachable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /objectives:
+    get:
+      tags: [Objectives]
+      operationId: listObjectives
+      summary: List all objectives
+      description: Returns all 17 objectives in study doc order, with the signed-in user's checklist progress.
+      responses:
+        "200":
+          description: All objectives.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ObjectiveSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /objectives/{objectiveId}:
+    parameters:
+      - $ref: "#/components/parameters/ObjectiveId"
+    get:
+      tags: [Objectives]
+      operationId: getObjective
+      summary: Get one objective with its checklist
+      description: Returns the objective and every checklist item, with whether the signed-in user has ticked it off.
+      responses:
+        "200":
+          description: The objective.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ObjectiveDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /objectives/{objectiveId}/items/{itemId}:
+    parameters:
+      - $ref: "#/components/parameters/ObjectiveId"
+      - $ref: "#/components/parameters/ItemId"
+    put:
+      tags: [Objectives]
+      operationId: setChecklistItem
+      summary: Tick a checklist item on or off
+      description: |
+        Sets the item as done or not done for the signed-in user. The call is idempotent:
+        sending the same value twice gives the same result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChecklistItemUpdate"
+      responses:
+        "200":
+          description: The updated item and the objective's new progress.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChecklistItemUpdateResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /quizzes:
+    get:
+      tags: [Quizzes]
+      operationId: listQuizzes
+      summary: List the signed-in user's submitted quizzes
+      description: |
+        Returns submitted quizzes, newest first. The progress page uses this to chart
+        scores over time. Quizzes that were started but never submitted aren't included.
+      parameters:
+        - name: objectiveId
+          in: query
+          required: false
+          description: Only return quizzes for this objective.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Submitted quizzes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/QuizSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Quizzes]
+      operationId: startQuiz
+      summary: Start a quiz
+      description: |
+        Starts a quiz for an objective with up to 10 random questions from that objective.
+        The response never includes the correct answers or explanations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartQuizRequest"
+      responses:
+        "201":
+          description: The quiz was started.
+          headers:
+            Location:
+              description: URL of the new quiz, for example `/quizzes/{quizId}`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Quiz"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: The objective has no questions yet.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://studytracker.example/problems/no-questions
+                title: The objective has no questions
+                status: 422
+                detail: Objective 5 has no questions yet.
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /quizzes/{quizId}:
+    parameters:
+      - $ref: "#/components/parameters/QuizId"
+    get:
+      tags: [Quizzes]
+      operationId: getQuiz
+      summary: Get a quiz
+      description: |
+        Returns the quiz and its questions, so the quiz page survives a page reload.
+        Never includes the correct answers, even after the quiz is submitted. Use
+        `GET /quizzes/{quizId}/result` for those.
+      responses:
+        "200":
+          description: The quiz.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Quiz"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /quizzes/{quizId}/answers:
+    parameters:
+      - $ref: "#/components/parameters/QuizId"
+    post:
+      tags: [Quizzes]
+      operationId: submitQuiz
+      summary: Submit the answers to a quiz
+      description: |
+        Scores the answers, stores the attempt and returns the result with the correct
+        answers and explanations. Send exactly one answer for every question in the quiz.
+        A quiz can only be submitted once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitQuizRequest"
+      responses:
+        "200":
+          description: The quiz was scored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuizResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The quiz has already been submitted.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://studytracker.example/problems/quiz-already-submitted
+                title: The quiz has already been submitted
+                status: 409
+                detail: Quiz 3f1c2a9e-6b1d-4a43-9d1e-2f5b8c7a0d11 was submitted at 2026-12-08T10:15:00Z.
+        "422":
+          description: |
+            The answers don't match the quiz: a question is missing or answered twice, a
+            question isn't in the quiz, or an option doesn't belong to its question.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://studytracker.example/problems/invalid-answers
+                title: The answers don't match the quiz
+                status: 422
+                detail: Question 42 is not in this quiz.
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /quizzes/{quizId}/result:
+    parameters:
+      - $ref: "#/components/parameters/QuizId"
+    get:
+      tags: [Quizzes]
+      operationId: getQuizResult
+      summary: Get the result of a submitted quiz
+      description: Returns the same result as submitting the quiz, so the results page survives a page reload.
+      responses:
+        "200":
+          description: The result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuizResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The quiz hasn't been submitted yet.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://studytracker.example/problems/quiz-not-submitted
+                title: The quiz hasn't been submitted
+                status: 409
+                detail: Submit the quiz before asking for its result.
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /progress:
+    get:
+      tags: [Progress]
+      operationId: getProgress
+      summary: Get progress per objective
+      description: |
+        Returns one entry per objective, in study doc order, with quiz statistics and
+        checklist progress for the signed-in user. Objectives without quizzes are included,
+        with null scores.
+      responses:
+        "200":
+          description: Progress for all objectives.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ObjectiveProgress"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    entraId:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Microsoft Entra ID access token for the API app registration. The token must have
+        the API as its audience and the `access_as_user` scope.
+
+  parameters:
+    ObjectiveId:
+      name: objectiveId
+      in: path
+      required: true
+      description: Objective number, 1 to 17, as in the study doc.
+      schema:
+        type: integer
+        minimum: 1
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      description: Checklist item ID.
+      schema:
+        type: integer
+        minimum: 1
+    QuizId:
+      name: quizId
+      in: path
+      required: true
+      description: Quiz ID.
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: The request is malformed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://studytracker.example/problems/bad-request
+            title: The request is malformed
+            status: 400
+            detail: "Field 'done' must be a boolean."
+    Unauthorized:
+      description: The access token is missing, expired or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://studytracker.example/problems/unauthorized
+            title: Not signed in
+            status: 401
+            detail: The access token has expired.
+    NotFound:
+      description: The resource doesn't exist or belongs to another user.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://studytracker.example/problems/not-found
+            title: Not found
+            status: 404
+            detail: Objective 18 doesn't exist.
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://studytracker.example/problems/internal
+            title: Something went wrong
+            status: 500
+            detail: Try again later.
+
+  schemas:
+    Problem:
+      type: object
+      description: Problem details as defined in RFC 9457.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: Stable identifier for the kind of problem.
+        title:
+          type: string
+          description: Short summary of the kind of problem.
+        status:
+          type: integer
+          description: HTTP status code.
+        detail:
+          type: string
+          description: Explanation of this occurrence, for people.
+        instance:
+          type: string
+          description: Path of the request that failed.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    SkillArea:
+      type: object
+      description: One of the five AZ-401 skill areas. The exam weight is a range, for example 15 to 20 percent.
+      required: [id, name, weightMinPercent, weightMaxPercent]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+          maximum: 5
+        name:
+          type: string
+          example: Design and implement build and release pipelines
+        weightMinPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          example: 15
+        weightMaxPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          example: 20
+
+    ObjectiveSummary:
+      type: object
+      required: [id, title, skillArea, itemCount, doneCount, progressPercent]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+          description: Objective number, as in the study doc.
+          example: 5
+        title:
+          type: string
+          example: Design and implement a source control strategy
+        skillArea:
+          $ref: "#/components/schemas/SkillArea"
+        itemCount:
+          type: integer
+          minimum: 0
+          description: Number of checklist items.
+          example: 12
+        doneCount:
+          type: integer
+          minimum: 0
+          description: Number of checklist items the user has ticked off.
+          example: 3
+        progressPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: doneCount divided by itemCount, rounded down. 0 when the objective has no items.
+          example: 25
+
+    ObjectiveDetail:
+      allOf:
+        - $ref: "#/components/schemas/ObjectiveSummary"
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              description: Checklist items in display order.
+              items:
+                $ref: "#/components/schemas/ChecklistItem"
+
+    ChecklistItem:
+      type: object
+      required: [id, text, done, doneAt]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+          example: 57
+        text:
+          type: string
+          example: Branch policies and required reviewers
+        done:
+          type: boolean
+          example: true
+        doneAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the user ticked the item off. Null when the item isn't done.
+
+    ChecklistItemUpdate:
+      type: object
+      required: [done]
+      additionalProperties: false
+      properties:
+        done:
+          type: boolean
+          description: True to tick the item off, false to clear it.
+
+    ChecklistItemUpdateResult:
+      type: object
+      required: [item, doneCount, progressPercent]
+      properties:
+        item:
+          $ref: "#/components/schemas/ChecklistItem"
+        doneCount:
+          type: integer
+          minimum: 0
+          description: The objective's new number of done items.
+        progressPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: The objective's new progress.
+
+    StartQuizRequest:
+      type: object
+      required: [objectiveId]
+      additionalProperties: false
+      properties:
+        objectiveId:
+          type: integer
+          minimum: 1
+          example: 5
+
+    QuizOption:
+      type: object
+      required: [id, text]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        text:
+          type: string
+          example: Require a minimum number of reviewers
+
+    QuizQuestion:
+      type: object
+      description: A question as shown during the quiz. Never includes the correct answer.
+      required: [id, prompt, options]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        prompt:
+          type: string
+          example: Which branch policy stops a developer from approving their own pull request?
+        options:
+          type: array
+          minItems: 2
+          items:
+            $ref: "#/components/schemas/QuizOption"
+
+    Quiz:
+      type: object
+      required: [id, objectiveId, status, startedAt, submittedAt, questions]
+      properties:
+        id:
+          type: string
+          format: uuid
+        objectiveId:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [in_progress, submitted]
+        startedAt:
+          type: string
+          format: date-time
+        submittedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null until the quiz is submitted.
+        questions:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: Questions in the order to show them.
+          items:
+            $ref: "#/components/schemas/QuizQuestion"
+
+    SubmitQuizRequest:
+      type: object
+      required: [answers]
+      additionalProperties: false
+      properties:
+        answers:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: One answer for every question in the quiz.
+          items:
+            $ref: "#/components/schemas/QuizAnswer"
+
+    QuizAnswer:
+      type: object
+      required: [questionId, optionId]
+      additionalProperties: false
+      properties:
+        questionId:
+          type: integer
+          minimum: 1
+        optionId:
+          type: integer
+          minimum: 1
+
+    QuizScore:
+      type: object
+      required: [correctCount, questionCount, scorePercent, passed]
+      properties:
+        correctCount:
+          type: integer
+          minimum: 0
+          example: 8
+        questionCount:
+          type: integer
+          minimum: 1
+          maximum: 10
+          example: 10
+        scorePercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: correctCount divided by questionCount, rounded down.
+          example: 80
+        passed:
+          type: boolean
+          description: True when scorePercent is 80 or more, the pass mark of 8 out of 10.
+
+    QuizSummary:
+      allOf:
+        - $ref: "#/components/schemas/QuizScore"
+        - type: object
+          required: [id, objectiveId, submittedAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            objectiveId:
+              type: integer
+              minimum: 1
+            submittedAt:
+              type: string
+              format: date-time
+
+    QuizResult:
+      allOf:
+        - $ref: "#/components/schemas/QuizSummary"
+        - type: object
+          required: [answers]
+          properties:
+            answers:
+              type: array
+              description: One entry per question, in quiz order.
+              items:
+                $ref: "#/components/schemas/AnswerResult"
+
+    AnswerResult:
+      type: object
+      required: [question, selectedOptionId, correctOptionId, correct, explanation]
+      properties:
+        question:
+          $ref: "#/components/schemas/QuizQuestion"
+        selectedOptionId:
+          type: integer
+          minimum: 1
+        correctOptionId:
+          type: integer
+          minimum: 1
+        correct:
+          type: boolean
+        explanation:
+          type: string
+          example: The policy "Allow requestors to approve their own changes" is off by default.
+
+    ObjectiveProgress:
+      type: object
+      required:
+        - objectiveId
+        - title
+        - skillAreaId
+        - checklistPercent
+        - attemptCount
+        - bestScorePercent
+        - lastScorePercent
+        - lastAttemptAt
+      properties:
+        objectiveId:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+        skillAreaId:
+          type: integer
+          minimum: 1
+          maximum: 5
+        checklistPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        attemptCount:
+          type: integer
+          minimum: 0
+          description: Number of submitted quizzes.
+        bestScorePercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: Null when the user hasn't submitted a quiz for this objective.
+        lastScorePercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: Null when the user hasn't submitted a quiz for this objective.
+        lastAttemptAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the last quiz was submitted. Null when there are none.
