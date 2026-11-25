@@ -6,7 +6,7 @@ To learn azure devops and github integration
 
 ## Development
 
-The app is React with TypeScript, built with [Vite](https://vite.dev/) and routed with [React Router](https://reactrouter.com/). It needs Node.js 22.22 or later.
+The app is React with TypeScript, built with [Vite](https://vite.dev/) and routed with [React Router](https://reactrouter.com/). It needs Node.js 22.22 or later. CI uses the version in `.nvmrc`.
 
 ```sh
 npm install
@@ -22,6 +22,16 @@ npm run dev            # dev server on http://localhost:5173
 | `npm run format`        | Formats the code with Prettier. `format:check` only checks.     |
 | `npm test`              | Runs the Vitest tests once. `test:watch` reruns on changes.     |
 | `npm run test:coverage` | Runs the tests with a coverage report in `coverage/`.           |
+
+### Continuous integration
+
+The [Frontend CI](.github/workflows/frontend-ci.yml) workflow runs on pull requests into `dev`, `test` and `main`, and on pushes to them. It checks formatting, lints, regenerates the API types and type-checks, runs the tests with coverage and builds the app. The coverage report is attached to each run as the `coverage` artifact.
+
+The **Require frontend CI** ruleset makes the `frontend-ci` check required on `dev` and `main`, so a pull request into them can't merge until CI passes. To run the same checks locally:
+
+```sh
+npm run format:check && npm run lint && npm run test:coverage && npm run build
+```
 
 ### Configuration
 
