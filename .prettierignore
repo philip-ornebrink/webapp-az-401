@@ -1,0 +1,6 @@
+dist
+coverage
+package-lock.json
+# Generated, or copied from the Azure Repos repo. Keep them byte-for-byte.
+src/api/schema.gen.ts
+api/openapi.yaml
