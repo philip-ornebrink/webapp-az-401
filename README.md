@@ -23,6 +23,27 @@ npm run dev            # dev server on http://localhost:5173
 | `npm test`              | Runs the Vitest tests once. `test:watch` reruns on changes.     |
 | `npm run test:coverage` | Runs the tests with a coverage report in `coverage/`.           |
 
+### Configuration
+
+Settings are Vite environment variables. The defaults are in `.env`, which is committed. Put local overrides in `.env.local`, which isn't. Vite puts every `VITE_` variable into the browser bundle, so never use one for a secret.
+
+| Variable                | Default                 | What it is                                                                                 |
+| ----------------------- | ----------------------- | ------------------------------------------------------------------------------------------ |
+| `VITE_API_BASE_URL`     | `/api`                  | Base URL the app calls the API on. In Azure, the API's absolute URL.                       |
+| `VITE_API_PROXY_TARGET` | `http://localhost:8080` | Where `npm run dev` and `npm run preview` send `/api` requests. Not used in the built app. |
+
+Locally the app calls `/api/...`. The dev server forwards those requests to the Go API and removes the `/api` prefix, so `/api/objectives` reaches `http://localhost:8080/objectives`. The browser only talks to `localhost:5173`, so the API needs no CORS setup locally. Start the API from the backend repository first.
+
+Vite reads the variables when it builds, so each environment needs its own build. The CD workflow sets the API URL for that environment:
+
+```sh
+VITE_API_BASE_URL=https://<api-app>.azurewebsites.net npm run build
+```
+
+Environment variables win over the `.env` files. The app reads its settings in `src/config.ts` and stops with a clear error when `VITE_API_BASE_URL` is missing or malformed. `src/api/index.ts` exports the API client for the current environment.
+
+### Routes
+
 Routes are defined in `src/routes.tsx`. Every page renders inside `src/layout/AppLayout.tsx`, which holds the header and navigation. To add a page, create it in `src/pages/` and add a route.
 
 ## API client
